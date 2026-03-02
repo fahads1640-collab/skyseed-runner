@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Skyseed Runner</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a1a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    font-family: 'Georgia', serif;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    border-radius: 12px;
+    box-shadow: 0 0 60px rgba(255,180,80,0.25);
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="500"></canvas>
+<script>
+// ─── CANVAS SETUP ────────────────────────────────────────────────────────────
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// ─── WEB AUDIO ───────────────────────────────────────────────────────────────
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function beep(freq, type, dur, vol = 0.18, delay = 0) {
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, audioCtx.currentTime + delay);
+  osc.frequency.exponentialRampToValueAtTime(freq * 0.5, audioCtx.currentTime + delay + dur);
+  gain.gain.setValueAtTime(vol, audioCtx.currentTime + delay);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + delay + dur);
+  osc.start(audioCtx.currentTime + delay);
+  osc.stop(audioCtx.currentTime + delay + dur);
+}
+
+const SFX = {
+  jump:       () => beep(420, 'sine', 0.18, 0.15),
+  seed:       () => { beep(660, 'sine', 0.12, 0.12); beep(880, 'sine', 0.12, 0.12, 0.06); },
+  water:      () => { beep(520, 'triangle', 0.14, 0.12); beep(780, 'triangle', 0.14, 0.12, 0.07); },
+  checkpoint: () => { beep(440, 'sine', 0.1, 0.12); beep(550, 'sine', 0.1, 0.12, 0.1); beep(660, 'sine', 0.15, 0.12, 0.2); },
+  bloom:      () => { [440,550,660,880].forEach((f,i) => beep(f,'sine',0.3,0.13,i*0.1)); },
+  win:        () => { [330,440,550,660,880,1100].forEach((f,i) => beep(f,'sine',0.4,0.15,i*0.12)); },
+  hurt:       () => beep(180, 'sawtooth', 0.2, 0.12),
+};
+
+// ─── INPUT ───────────────────────────────────────────────────────────────────
+const keys = {};
+document.addEventListener('keydown', e => { keys[e.code] = true; });
+document.addEventListener('keyup',   e => { keys[e.code] = false; });
+
+function isLeft()  { return keys['ArrowLeft']  || keys['KeyA']; }
+function isRight() { return keys['ArrowRight'] || keys['KeyD']; }
+function isJump()  { return keys['Space'] || keys['KeyW'] || keys['ArrowUp']; }
+
+// ─── CONSTANTS ───────────────────────────────────────────────────────────────
+const GRAVITY   = 0.55;
+const JUMP_VEL  = -12.5;
+const SPEED     = 3.8;
+const PLR_W     = 24, PLR_H = 32;
+
+// ─── LEVEL DATA ──────────────────────────────────────────────────────────────
+// Platform types: normal | crumble | checkpoint
+function makeLevels() {
+  return [
+    // ── LEVEL 1 ──────────────────────────────────────────────
+    {
+      platforms: [
+        { x:0,   y:460, w:200, h:16, type:'normal' },
+        { x:220, y:400, w:120, h:16, type:'normal' },
+        { x:380, y:340, w:100, h:16, type:'crumble' },
+        { x:510, y:290, w:130, h:16, type:'checkpoint' },
+        { x:670, y:240, w:110, h:16, type:'normal' },
+        { x:560, y:180, w: 90, h:16, type:'normal' },
+        { x:390, y:140, w:130, h:16, type:'normal' },
+        { x:200, y:200, w:110, h:16, type:'crumble' },
+        { x: 50, y:260, w:100, h:16, type:'normal' },
+        { x: 80, y:180, w:120, h:16, type:'normal' },
+        { x:220, y:130, w:100, h:16, type:'normal' },
+      ],
+      collectibles: [
+        { x:250, y:375, type:'seed'  },
+        { x:420, y:315, type:'water' },
+        { x:600, y:265, type:'seed'  },
+        { x:720, y:215, type:'seed'  },
+        { x:590, y:155, type:'water' },
+        { x:430, y:115, type:'seed'  },
+        { x:240, y:175, type:'water' },
+        { x: 90, y:235, type:'seed'  },
+        { x:120, y:155, type:'water' },
+        { x:260, y:105, type:'seed'  },
+      ],
+      bloom: { x:240, y:95 },
+      playerStart: { x:30, y:420 },
+    },
+    // ── LEVEL 2 ──────────────────────────────────────────────
+    {
+      platforms: [
+        { x:0,   y:460, w:150, h:16, type:'normal' },
+        { x:180, y:410, w: 90, h:16, type:'crumble' },
+        { x:300, y:360, w: 80, h:16, type:'normal' },
+        { x:410, y:300, w: 90, h:16, type:'crumble' },
+        { x:530, y:250, w:100, h:16, type:'checkpoint' },
+        { x:660, y:200, w: 80, h:16, type:'normal' },
+        { x:550, y:145, w: 80, h:16, type:'crumble' },
+        { x:410, y:105, w: 90, h:16, type:'normal' },
+        { x:270, y:150, w: 80, h:16, type:'normal' },
+        { x:130, y:200, w: 90, h:16, type:'checkpoint' },
+        { x: 30, y:260, w: 80, h:16, type:'normal' },
+        { x: 80, y:180, w: 80, h:16, type:'normal' },
+        { x:190, y:120, w: 90, h:16, type:'normal' },
+        { x:300,  y:70, w:120, h:16, type:'normal' },
+      ],
+      collectibles: [
+        { x:210, y:385, type:'water' },
+        { x:340, y:335, type:'seed'  },
+        { x:450, y:275, type:'water' },
+        { x:580, y:225, type:'seed'  },
+        { x:695, y:175, type:'water' },
+        { x:585, y:120, type:'seed'  },
+        { x:445,  y:80, type:'water' },
+        { x:305,  y:125, type:'seed' },
+        { x:165,  y:175, type:'water'},
+        { x: 60,  y:235, type:'seed' },
+        { x:115,  y:155, type:'water'},
+        { x:230,  y: 95, type:'seed' },
+      ],
+      bloom: { x:355, y:35 },
+      playerStart: { x:30, y:420 },
+    }
+  ];
+}
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let state; // 'play' | 'win'
+let levelIndex;
+let levels;
+let player;
+let platforms;
+let collectibles;
+let bloom;
+let checkpoint; // {x,y} respawn point
+let seeds, waterDrops;
+let jumpPressed; // edge detect
+
+function initLevel(idx) {
+  levelIndex = idx;
+  const ld = levels[idx];
+
+  // Deep copy platforms with crumble state
+  platforms = ld.platforms.map(p => ({ ...p, crumbleTimer: -1, gone: false }));
+
+  // Deep copy collectibles
+  collectibles = ld.collectibles.map(c => ({ ...c, collected: false, glow: 0 }));
+
+  // Bloom goal
+  bloom = { ...ld.bloom, collected: false, glow: 0 };
+
+  // Player
+  checkpoint = { x: ld.playerStart.x, y: ld.playerStart.y - PLR_H };
+  spawnPlayer();
+}
+
+function spawnPlayer() {
+  player = {
+    x: checkpoint.x,
+    y: checkpoint.y,
+    vx: 0,
+    vy: 0,
+    onGround: false,
+    facing: 1,
+  };
+}
+
+function initGame() {
+  state = 'play';
+  levels = makeLevels();
+  seeds = 0;
+  waterDrops = 0;
+  jumpPressed = false;
+  initLevel(0);
+}
+
+// ─── COLLISION HELPERS ───────────────────────────────────────────────────────
+function rectOverlap(ax,ay,aw,ah, bx,by,bw,bh) {
+  return ax < bx+bw && ax+aw > bx && ay < by+bh && ay+ah > by;
+}
+
+// ─── UPDATE ──────────────────────────────────────────────────────────────────
+function update() {
+  if (state !== 'play') return;
+
+  // ── Horizontal movement
+  let moving = false;
+  if (isLeft())  { player.vx = -SPEED; player.facing = -1; moving = true; }
+  if (isRight()) { player.vx =  SPEED; player.facing =  1; moving = true; }
+  if (!moving)   { player.vx *= 0.7; }
+
+  // ── Jump (edge detect)
+  if (isJump()) {
+    if (!jumpPressed && player.onGround) {
+      player.vy = JUMP_VEL;
+      player.onGround = false;
+      SFX.jump();
+    }
+    jumpPressed = true;
+  } else {
+    jumpPressed = false;
+  }
+
+  // ── Gravity
+  player.vy += GRAVITY;
+  player.vy = Math.min(player.vy, 18);
+
+  // ── Move & Collide
+  player.x += player.vx;
+  player.y += player.vy;
+  player.onGround = false;
+
+  // Clamp horizontal
+  if (player.x < 0) { player.x = 0; player.vx = 0; }
+  if (player.x + PLR_W > W) { player.x = W - PLR_W; player.vx = 0; }
+
+  // Platform collision
+  for (const p of platforms) {
+    if (p.gone) continue;
+    if (!rectOverlap(player.x, player.y, PLR_W, PLR_H, p.x, p.y, p.w, p.h)) continue;
+
+    const prevBottom = player.y + PLR_H - player.vy;
+    const prevRight  = player.x + PLR_W - player.vx;
+    const prevLeft   = player.x - player.vx;
+    const prevTop    = player.y - player.vy;
+
+    // Landing on top
+    if (prevBottom <= p.y + 4 && player.vy >= 0) {
+      player.y = p.y - PLR_H;
+      player.vy = 0;
+      player.onGround = true;
+
+      // Checkpoint
+      if (p.type === 'checkpoint' && !p.activated) {
+        p.activated = true;
+        checkpoint = { x: p.x + p.w/2 - PLR_W/2, y: p.y - PLR_H };
+        SFX.checkpoint();
+      }
+
+      // Crumble start
+      if (p.type === 'crumble' && p.crumbleTimer < 0) {
+        p.crumbleTimer = 60; // frames until gone
+      }
+    }
+    // Bump head
+    else if (prevTop >= p.y + p.h - 4 && player.vy < 0) {
+      player.y = p.y + p.h;
+      player.vy = 0;
+    }
+    // Side collisions
+    else if (prevRight <= p.x + 4) {
+      player.x = p.x - PLR_W;
+      player.vx = 0;
+    } else if (prevLeft >= p.x + p.w - 4) {
+      player.x = p.x + p.w;
+      player.vx = 0;
+    }
+  }
+
+  // ── Crumble timers
+  for (const p of platforms) {
+    if (p.crumbleTimer > 0) {
+      p.crumbleTimer--;
+      if (p.crumbleTimer === 0) p.gone = true;
+    }
+  }
+
+  // ── Collectibles
+  for (const c of collectibles) {
+    if (c.collected) continue;
+    c.glow = (c.glow + 0.08) % (Math.PI * 2);
+    if (rectOverlap(player.x, player.y, PLR_W, PLR_H, c.x - 8, c.y - 8, 16, 16)) {
+      c.collected = true;
+      if (c.type === 'seed')  { seeds++;      SFX.seed();  }
+      if (c.type === 'water') { waterDrops++; SFX.water(); }
+    }
+  }
+
+  // ── Bloom
+  if (!bloom.collected) {
+    bloom.glow = (bloom.glow + 0.05) % (Math.PI * 2);
+    if (rectOverlap(player.x, player.y, PLR_W, PLR_H, bloom.x - 14, bloom.y - 14, 28, 28)) {
+      bloom.collected = true;
+      SFX.bloom();
+      if (levelIndex < levels.length - 1) {
+        setTimeout(() => initLevel(levelIndex + 1), 600);
+      } else {
+        setTimeout(() => { state = 'win'; SFX.win(); }, 600);
+      }
+    }
+  }
+
+  // ── Respawn if fallen off
+  if (player.y > H + 60) {
+    SFX.hurt();
+    spawnPlayer();
+  }
+}
+
+// ─── DRAW HELPERS ────────────────────────────────────────────────────────────
+function drawBackground() {
+  // Sunrise gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0.0,  '#1a2a4a');
+  grad.addColorStop(0.35, '#3a5a8a');
+  grad.addColorStop(0.65, '#e8905a');
+  grad.addColorStop(0.85, '#f5c875');
+  grad.addColorStop(1.0,  '#a8dfc0');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Soft clouds
+  ctx.save();
+  ctx.globalAlpha = 0.13;
+  ctx.fillStyle = '#fff';
+  const clouds = [[80,80,90,30],[230,50,130,35],[500,100,110,28],[680,60,100,32],[350,140,80,22]];
+  for (const [cx,cy,cw,ch] of clouds) {
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, cw, ch, 0, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawPlatform(p) {
+  if (p.gone) return;
+
+  ctx.save();
+  const alpha = p.crumbleTimer > 0 ? Math.max(0.2, p.crumbleTimer / 60) : 1;
+  ctx.globalAlpha = alpha;
+
+  if (p.type === 'normal') {
+    // Mossy green
+    const g = ctx.createLinearGradient(p.x, p.y, p.x, p.y + p.h);
+    g.addColorStop(0, '#7ecba1');
+    g.addColorStop(1, '#4a9970');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.roundRect(p.x, p.y, p.w, p.h, 5);
+    ctx.fill();
+    ctx.strokeStyle = '#3a7050';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+  } else if (p.type === 'crumble') {
+    // Earthy orange-brown, cracks appear
+    const g = ctx.createLinearGradient(p.x, p.y, p.x, p.y + p.h);
+    g.addColorStop(0, '#c8885a');
+    g.addColorStop(1, '#9a5c30');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.roundRect(p.x, p.y, p.w, p.h, 4);
+    ctx.fill();
+    ctx.strokeStyle = '#7a3c18';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // Crack marks
+    if (p.crumbleTimer > 0) {
+      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+      ctx.lineWidth = 1;
+      const cx = p.x + p.w/2, cy = p.y + p.h/2;
+      ctx.beginPath(); ctx.moveTo(cx-15, cy-3); ctx.lineTo(cx+10, cy+4); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx+5, cy-5); ctx.lineTo(cx-8, cy+5); ctx.stroke();
+    }
+
+  } else if (p.type === 'checkpoint') {
+    // Glowing teal/gold
+    const pulse = Math.sin(Date.now() * 0.003) * 0.5 + 0.5;
+    const g = ctx.createLinearGradient(p.x, p.y, p.x, p.y + p.h);
+    g.addColorStop(0, `rgba(80,220,200,${0.7 + pulse * 0.3})`);
+    g.addColorStop(1, `rgba(40,160,140,${0.7 + pulse * 0.3})`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.roundRect(p.x, p.y, p.w, p.h, 6);
+    ctx.fill();
+    ctx.strokeStyle = p.activated ? '#ffd700' : '#20c0a0';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = p.activated ? '#ffd700' : '#00ffcc';
+    ctx.shadowBlur = 8 + pulse * 6;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  ctx.restore();
+}
+
+function drawSkyseed(c) {
+  if (c.collected) return;
+  const glow = Math.sin(c.glow) * 0.4 + 0.6;
+  ctx.save();
+  ctx.shadowColor = '#ffe060';
+  ctx.shadowBlur = 10 + glow * 8;
+  // Teardrop seed shape
+  ctx.fillStyle = `rgba(255,${200 + glow*40},60,${0.7 + glow*0.3})`;
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, 6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#ffcc00';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  // Tiny sprout
+  ctx.strokeStyle = '#88dd60';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(c.x, c.y - 6); ctx.lineTo(c.x, c.y - 11); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(c.x, c.y - 9); ctx.lineTo(c.x - 4, c.y - 13); ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+function drawWaterDrop(c) {
+  if (c.collected) return;
+  const glow = Math.sin(c.glow) * 0.4 + 0.6;
+  ctx.save();
+  ctx.shadowColor = '#60ccff';
+  ctx.shadowBlur = 10 + glow * 8;
+  ctx.fillStyle = `rgba(80,${160 + glow*60},255,${0.7 + glow*0.3})`;
+  // Water drop path
+  ctx.beginPath();
+  ctx.arc(c.x, c.y + 2, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(c.x, c.y - 8);
+  ctx.quadraticCurveTo(c.x + 5, c.y - 2, c.x, c.y + 5);
+  ctx.quadraticCurveTo(c.x - 5, c.y - 2, c.x, c.y - 8);
+  ctx.fillStyle = `rgba(100,200,255,${0.5 + glow*0.3})`;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+function drawBloom(b) {
+  if (b.collected) return;
+  const t = Date.now() * 0.002;
+  const pulse = Math.sin(b.glow) * 0.3 + 0.7;
+  ctx.save();
+  ctx.shadowColor = '#ffaaff';
+  ctx.shadowBlur = 20 + pulse * 15;
+  // Core circle
+  ctx.fillStyle = `rgba(255,${160 + pulse*80},255,${0.8 + pulse*0.2})`;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, 13, 0, Math.PI * 2);
+  ctx.fill();
+  // Petals
+  for (let i = 0; i < 6; i++) {
+    const angle = (i / 6) * Math.PI * 2 + t;
+    const px = b.x + Math.cos(angle) * 18;
+    const py = b.y + Math.sin(angle) * 18;
+    ctx.fillStyle = `rgba(255,200,255,${0.5 + pulse*0.3})`;
+    ctx.beginPath();
+    ctx.arc(px, py, 6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.strokeStyle = '#ff80ff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, 13, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+function drawPlayer() {
+  const p = player;
+  ctx.save();
+  ctx.translate(p.x + PLR_W / 2, p.y + PLR_H / 2);
+  ctx.scale(p.facing, 1);
+
+  // Body
+  ctx.fillStyle = '#f5e0b0';
+  ctx.beginPath();
+  ctx.roundRect(-PLR_W/2, -PLR_H/2 + 6, PLR_W, PLR_H - 6, 6);
+  ctx.fill();
+
+  // Head
+  ctx.fillStyle = '#f5e0b0';
+  ctx.beginPath();
+  ctx.arc(0, -PLR_H/2 + 6, 10, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Hair/hat (leaf)
+  ctx.fillStyle = '#80cc60';
+  ctx.beginPath();
+  ctx.ellipse(-2, -PLR_H/2, 10, 6, -0.3, 0, Math.PI*2);
+  ctx.fill();
+
+  // Eyes
+  ctx.fillStyle = '#3a2a10';
+  ctx.beginPath(); ctx.arc(4, -PLR_H/2 + 5, 2, 0, Math.PI*2); ctx.fill();
+
+  // Shirt
+  ctx.fillStyle = '#70b8e0';
+  ctx.beginPath();
+  ctx.roundRect(-PLR_W/2 + 2, -PLR_H/2 + 14, PLR_W - 4, PLR_H/2 - 2, 4);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawHUD() {
+  ctx.save();
+  // HUD panel
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath();
+  ctx.roundRect(8, 8, 210, 78, 10);
+  ctx.fill();
+
+  ctx.font = 'bold 14px Georgia';
+  ctx.fillStyle = '#ffd080';
+  ctx.fillText(`Level ${levelIndex + 1} / 2`, 18, 28);
+
+  ctx.font = '13px Georgia';
+  ctx.fillStyle = '#ffe060';
+  ctx.fillText(`🌱 Seeds: ${seeds}`, 18, 48);
+  ctx.fillStyle = '#80ccff';
+  ctx.fillText(`💧 Water: ${waterDrops}`, 18, 66);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.font = '11px Georgia';
+  ctx.fillText('A/D: move  ·  Space/W/↑: jump', 18, 82);
+
+  ctx.restore();
+}
+
+function drawWinScreen() {
+  ctx.save();
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#1a3a5a');
+  grad.addColorStop(0.5, '#2a6a9a');
+  grad.addColorStop(1, '#e0a060');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Floating petals decoration
+  const t = Date.now() * 0.001;
+  for (let i = 0; i < 12; i++) {
+    const px = (Math.sin(t * 0.5 + i * 2.3) * 0.5 + 0.5) * W;
+    const py = ((t * 0.12 + i * 0.3) % 1.2 - 0.1) * H;
+    ctx.shadowColor = '#ffaaff';
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = `rgba(255,180,255,0.6)`;
+    ctx.beginPath();
+    ctx.ellipse(px, py, 6, 3, t + i, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.shadowBlur = 0;
+
+  // Main panel
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.beginPath();
+  ctx.roundRect(W/2 - 200, H/2 - 120, 400, 240, 18);
+  ctx.fill();
+
+  ctx.textAlign = 'center';
+
+  ctx.font = 'bold 38px Georgia';
+  ctx.shadowColor = '#ffaaff';
+  ctx.shadowBlur = 20;
+  ctx.fillStyle = '#ffe8ff';
+  ctx.fillText('🌸 Garden Bloomed! 🌸', W/2, H/2 - 55);
+  ctx.shadowBlur = 0;
+
+  ctx.font = '18px Georgia';
+  ctx.fillStyle = '#ffd080';
+  ctx.fillText('The skyseeds have found their home.', W/2, H/2 - 15);
+
+  ctx.font = '15px Georgia';
+  ctx.fillStyle = '#ffe060';
+  ctx.fillText(`Seeds collected: ${seeds}`, W/2, H/2 + 20);
+  ctx.fillStyle = '#80ccff';
+  ctx.fillText(`Water drops: ${waterDrops}`, W/2, H/2 + 45);
+
+  ctx.font = '14px Georgia';
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.fillText('Press Enter or Space to play again', W/2, H/2 + 90);
+
+  ctx.restore();
+}
+
+// Restart on win screen
+document.addEventListener('keydown', e => {
+  if (state === 'win' && (e.code === 'Space' || e.code === 'Enter')) {
+    initGame();
+  }
+});
+
+// ─── GAME LOOP ───────────────────────────────────────────────────────────────
+function loop() {
+  update();
+
+  drawBackground();
+
+  if (state === 'play') {
+    // Platforms
+    for (const p of platforms) drawPlatform(p);
+
+    // Collectibles
+    for (const c of collectibles) {
+      if (c.type === 'seed')  drawSkyseed(c);
+      else                    drawWaterDrop(c);
+    }
+
+    // Bloom
+    drawBloom(bloom);
+
+    // Player
+    drawPlayer();
+
+    // HUD
+    drawHUD();
+
+  } else if (state === 'win') {
+    drawWinScreen();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+// ─── START ───────────────────────────────────────────────────────────────────
+// Resume audio on first interaction
+document.addEventListener('keydown', () => {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}, { once: false });
+
+initGame();
+loop();
+</script>
+</body>
+</html>
